@@ -1,0 +1,108 @@
+//@version=5
+// =============================================================================
+// Strategy Four (st4) - Scalping Signals: EMA Pullback + VWAP + RSI
+// TradingView Pine Script v5  -  INDICATOR (signals only, no backtest)
+//
+// Purpose:
+//   A multi-timeframe scalping helper for 1m / 5m / 30m charts.
+//   It only DRAWS arrows on the chart when a valid setup appears - it does NOT
+//   place orders. Use it on your entry timeframe (1m or 5m).
+//
+// The professional top-down logic:
+//   * Higher timeframe (default 30m) EMA200  -> direction / bias filter.
+//   * Current timeframe EMA9 / EMA21         -> pullback zone for entries.
+//   * VWAP                                    -> intraday equilibrium filter.
+//   * RSI(14)                                 -> momentum confirmation.
+//
+// A LONG arrow appears only when ALL of these agree:
+//   - Higher-TF bias is UP (price above the 30m EMA200)
+//   - Price is above EMA21 and above VWAP (with the trend)
+//   - This candle wicked down into the EMA9 (a pullback) and closed bullish
+//   - RSI above 50 (momentum up)
+//   SHORT is the mirror image.
+//
+// How to run:
+//   1. TradingView -> Pine Editor -> paste this file -> Add to chart.
+//   2. Set your chart to 1m or 5m. The 30m bias is pulled automatically.
+//   3. Right-click a signal -> "Add alert" to get notified live.
+// =============================================================================
+
+indicator(
+     title      = "st4 - Scalp EMA+VWAP+RSI",
+     shorttitle = "st4 Scalp",
+     overlay    = true)
+
+// -----------------------------------------------------------------------------
+// Inputs
+// -----------------------------------------------------------------------------
+biasTF     = input.timeframe("30", "Higher-TF Bias",  group = "Bias")
+biasEmaLen = input.int(200, "Bias EMA Length", minval = 1, group = "Bias")
+
+emaFast    = input.int(9,   "EMA Fast (pullback)",  minval = 1, group = "Entry TF")
+emaSlow    = input.int(21,  "EMA Slow (pullback)",  minval = 1, group = "Entry TF")
+emaTrend   = input.int(200, "EMA Trend",            minval = 1, group = "Entry TF")
+rsiLen     = input.int(14,  "RSI Length",           minval = 1, group = "Entry TF")
+
+useVwap    = input.bool(true, "Require VWAP alignment", group = "Filters")
+showEmas   = input.bool(true, "Show EMAs & VWAP",       group = "Display")
+
+// -----------------------------------------------------------------------------
+// Indicators
+// -----------------------------------------------------------------------------
+ema9   = ta.ema(close, emaFast)
+ema21  = ta.ema(close, emaSlow)
+ema200 = ta.ema(close, emaTrend)
+rsi    = ta.rsi(close, rsiLen)
+vwap   = ta.vwap(hlc3)
+
+// Higher-timeframe bias EMA (pulled from the 30m chart by default).
+// lookahead OFF so the bias uses only closed higher-TF bars (no repaint).
+htfBiasEma = request.security(syminfo.tickerid, biasTF, ta.ema(close, biasEmaLen),
+     lookahead = barmerge.lookahead_off)
+
+biasUp   = close > htfBiasEma
+biasDown = close < htfBiasEma
+
+// -----------------------------------------------------------------------------
+// Setup conditions
+// -----------------------------------------------------------------------------
+vwapOkLong  = not useVwap or close > vwap
+vwapOkShort = not useVwap or close < vwap
+
+// Long : uptrend bias, price with the trend, this bar pulled back into the
+//        fast EMA and closed bullish, momentum up.
+longSetup = biasUp and close > ema21 and vwapOkLong and
+     low <= ema9 and close > open and rsi > 50
+
+// Short : mirror image.
+shortSetup = biasDown and close < ema21 and vwapOkShort and
+     high >= ema9 and close < open and rsi < 50
+
+// Only fire on the first bar of a fresh setup to avoid clusters of arrows.
+longSignal  = longSetup  and not longSetup[1]
+shortSignal = shortSetup and not shortSetup[1]
+
+// -----------------------------------------------------------------------------
+// Plots
+// -----------------------------------------------------------------------------
+plot(showEmas ? ema9   : na, "EMA 9",   color = color.new(color.aqua,   0))
+plot(showEmas ? ema21  : na, "EMA 21",  color = color.new(color.orange, 0))
+plot(showEmas ? ema200 : na, "EMA 200", color = color.new(color.gray,   0), linewidth = 2)
+plot(showEmas ? vwap   : na, "VWAP",    color = color.new(color.fuchsia,0), linewidth = 2)
+
+plotshape(longSignal,  title = "Long",  style = shape.triangleup,
+     location = location.belowbar, color = color.new(color.green, 0),
+     size = size.small, text = "BUY")
+plotshape(shortSignal, title = "Short", style = shape.triangledown,
+     location = location.abovebar, color = color.new(color.red, 0),
+     size = size.small, text = "SELL")
+
+// Background tint of the current higher-TF bias (subtle).
+bgcolor(biasUp   ? color.new(color.green, 94) : na, title = "Bias Up")
+bgcolor(biasDown ? color.new(color.red,   94) : na, title = "Bias Down")
+
+// -----------------------------------------------------------------------------
+// Alerts (right-click a signal -> Add alert, or use these conditions)
+// -----------------------------------------------------------------------------
+alertcondition(longSignal,  title = "st4 Long Signal",  message = "st4 SCALP LONG on {{ticker}} {{interval}}")
+alertcondition(shortSignal, title = "st4 Short Signal", message = "st4 SCALP SHORT on {{ticker}} {{interval}}")
