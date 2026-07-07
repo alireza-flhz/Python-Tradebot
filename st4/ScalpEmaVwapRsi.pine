@@ -1,25 +1,20 @@
 //@version=5
 // =============================================================================
-// Strategy Four (st4) - Scalping Signals: EMA Pullback + VWAP + RSI
+// Strategy Four (st4) - Scalping: Support/Resistance + FVG (+ EMA/VWAP/RSI engine)
 // TradingView Pine Script v5  -  INDICATOR (signals only, no backtest)
 //
 // Purpose:
 //   A multi-timeframe scalping helper for 1m / 5m / 30m charts.
-//   It only DRAWS arrows on the chart when a valid setup appears - it does NOT
-//   place orders. Use it on your entry timeframe (1m or 5m).
+//   It DRAWS on the chart only - it does NOT place orders.
 //
-// The professional top-down logic:
-//   * Higher timeframe (default 30m) EMA200  -> direction / bias filter.
-//   * Current timeframe EMA9 / EMA21         -> pullback zone for entries.
-//   * VWAP                                    -> intraday equilibrium filter.
-//   * RSI(14)                                 -> momentum confirmation.
+// What you SEE on the chart now:
+//   * Support / Resistance levels  (from swing pivots)               <- NEW
+//   * Fair Value Gap (FVG) boxes   (3-candle imbalance)              <- NEW
+//   * BUY / SELL scalp arrows      (top-down EMA + VWAP + RSI engine)
+//   * A subtle bias background     (30m direction)
 //
-// A LONG arrow appears only when ALL of these agree:
-//   - Higher-TF bias is UP (price above the 30m EMA200)
-//   - Price is above EMA21 and above VWAP (with the trend)
-//   - This candle wicked down into the EMA9 (a pullback) and closed bullish
-//   - RSI above 50 (momentum up)
-//   SHORT is the mirror image.
+// The EMA and VWAP LINES are no longer drawn (chart kept clean). Those values
+// are still calculated under the hood because the BUY/SELL engine uses them.
 //
 // How to run:
 //   1. TradingView -> Pine Editor -> paste this file -> Add to chart.
@@ -28,68 +23,130 @@
 // =============================================================================
 
 indicator(
-     title      = "st4 - Scalp EMA+VWAP+RSI",
-     shorttitle = "st4 Scalp",
-     overlay    = true)
+     title            = "st4 - Scalp S/R + FVG",
+     shorttitle       = "st4 S/R+FVG",
+     overlay          = true,
+     max_lines_count  = 200,
+     max_boxes_count  = 200,
+     max_labels_count = 100)
 
 // -----------------------------------------------------------------------------
 // Inputs
 // -----------------------------------------------------------------------------
+// Bias / entry engine (drives BUY/SELL arrows; lines are hidden)
 biasTF     = input.timeframe("30", "Higher-TF Bias",  group = "Bias")
 biasEmaLen = input.int(200, "Bias EMA Length", minval = 1, group = "Bias")
+emaFast    = input.int(9,   "EMA Fast (pullback)",  minval = 1, group = "Entry engine")
+emaSlow    = input.int(21,  "EMA Slow (pullback)",  minval = 1, group = "Entry engine")
+rsiLen     = input.int(14,  "RSI Length",           minval = 1, group = "Entry engine")
+useVwap    = input.bool(true, "Require VWAP alignment", group = "Entry engine")
+showSignals= input.bool(true, "Show BUY/SELL arrows",   group = "Entry engine")
 
-emaFast    = input.int(9,   "EMA Fast (pullback)",  minval = 1, group = "Entry TF")
-emaSlow    = input.int(21,  "EMA Slow (pullback)",  minval = 1, group = "Entry TF")
-emaTrend   = input.int(200, "EMA Trend",            minval = 1, group = "Entry TF")
-rsiLen     = input.int(14,  "RSI Length",           minval = 1, group = "Entry TF")
+// Support / Resistance
+showSR     = input.bool(true, "Show Support/Resistance", group = "Support/Resistance")
+srLen      = input.int(10, "S/R Pivot Lookback", minval = 2, group = "Support/Resistance")
+srMax      = input.int(5,  "Max levels per side", minval = 1, group = "Support/Resistance")
+srLabels   = input.bool(false, "Show price labels", group = "Support/Resistance")
 
-useVwap    = input.bool(true, "Require VWAP alignment", group = "Filters")
-showEmas   = input.bool(true, "Show EMAs & VWAP",       group = "Display")
+// Fair Value Gap
+showFVG    = input.bool(true, "Show FVG boxes", group = "FVG")
+fvgMax     = input.int(12, "Max FVG boxes", minval = 1, group = "FVG")
+fvgExtend  = input.int(10, "FVG extend (bars)", minval = 0, group = "FVG")
+
+resColor   = input.color(color.red,   "Resistance color", group = "Colors")
+supColor   = input.color(color.green, "Support color",    group = "Colors")
+fvgBullCol = input.color(color.new(color.green, 80), "Bullish FVG", group = "Colors")
+fvgBearCol = input.color(color.new(color.red,   80), "Bearish FVG", group = "Colors")
 
 // -----------------------------------------------------------------------------
-// Indicators
+// Entry engine (calculated, not plotted)
 // -----------------------------------------------------------------------------
-ema9   = ta.ema(close, emaFast)
-ema21  = ta.ema(close, emaSlow)
-ema200 = ta.ema(close, emaTrend)
-rsi    = ta.rsi(close, rsiLen)
-vwap   = ta.vwap(hlc3)
+ema9  = ta.ema(close, emaFast)
+ema21 = ta.ema(close, emaSlow)
+rsi   = ta.rsi(close, rsiLen)
+vwap  = ta.vwap(hlc3)
 
-// Higher-timeframe bias EMA (pulled from the 30m chart by default).
-// lookahead OFF so the bias uses only closed higher-TF bars (no repaint).
 htfBiasEma = request.security(syminfo.tickerid, biasTF, ta.ema(close, biasEmaLen),
      lookahead = barmerge.lookahead_off)
-
 biasUp   = close > htfBiasEma
 biasDown = close < htfBiasEma
 
-// -----------------------------------------------------------------------------
-// Setup conditions
-// -----------------------------------------------------------------------------
 vwapOkLong  = not useVwap or close > vwap
 vwapOkShort = not useVwap or close < vwap
 
-// Long : uptrend bias, price with the trend, this bar pulled back into the
-//        fast EMA and closed bullish, momentum up.
-longSetup = biasUp and close > ema21 and vwapOkLong and
-     low <= ema9 and close > open and rsi > 50
-
-// Short : mirror image.
-shortSetup = biasDown and close < ema21 and vwapOkShort and
-     high >= ema9 and close < open and rsi < 50
-
-// Only fire on the first bar of a fresh setup to avoid clusters of arrows.
-longSignal  = longSetup  and not longSetup[1]
-shortSignal = shortSetup and not shortSetup[1]
+longSetup  = biasUp   and close > ema21 and vwapOkLong  and low  <= ema9 and close > open and rsi > 50
+shortSetup = biasDown and close < ema21 and vwapOkShort and high >= ema9 and close < open and rsi < 50
+longSignal  = showSignals and longSetup  and not longSetup[1]
+shortSignal = showSignals and shortSetup and not shortSetup[1]
 
 // -----------------------------------------------------------------------------
-// Plots
+// Support / Resistance  (swing pivots -> horizontal levels)
 // -----------------------------------------------------------------------------
-plot(showEmas ? ema9   : na, "EMA 9",   color = color.new(color.aqua,   0))
-plot(showEmas ? ema21  : na, "EMA 21",  color = color.new(color.orange, 0))
-plot(showEmas ? ema200 : na, "EMA 200", color = color.new(color.gray,   0), linewidth = 2)
-plot(showEmas ? vwap   : na, "VWAP",    color = color.new(color.fuchsia,0), linewidth = 2)
+// A pivot high confirms `srLen` bars after it forms -> resistance.
+// A pivot low  confirms `srLen` bars after it forms -> support.
+var array<line>  resLines = array.new_line()
+var array<label> resLbls  = array.new_label()
+var array<line>  supLines = array.new_line()
+var array<label> supLbls  = array.new_label()
 
+ph = ta.pivothigh(high, srLen, srLen)
+pl = ta.pivotlow(low,  srLen, srLen)
+
+if showSR and not na(ph)
+    ln = line.new(bar_index - srLen, ph, bar_index, ph,
+         color = resColor, width = 1, extend = extend.right)
+    array.push(resLines, ln)
+    if srLabels
+        lb = label.new(bar_index, ph, str.tostring(ph, format.mintick),
+             style = label.style_label_down, color = color.new(resColor, 70),
+             textcolor = color.white, size = size.tiny)
+        array.push(resLbls, lb)
+    if array.size(resLines) > srMax
+        line.delete(array.shift(resLines))
+        if array.size(resLbls) > 0
+            label.delete(array.shift(resLbls))
+
+if showSR and not na(pl)
+    ln = line.new(bar_index - srLen, pl, bar_index, pl,
+         color = supColor, width = 1, extend = extend.right)
+    array.push(supLines, ln)
+    if srLabels
+        lb = label.new(bar_index, pl, str.tostring(pl, format.mintick),
+             style = label.style_label_up, color = color.new(supColor, 70),
+             textcolor = color.white, size = size.tiny)
+        array.push(supLbls, lb)
+    if array.size(supLines) > srMax
+        line.delete(array.shift(supLines))
+        if array.size(supLbls) > 0
+            label.delete(array.shift(supLbls))
+
+// -----------------------------------------------------------------------------
+// Fair Value Gap (FVG)  -  3-candle imbalance
+// -----------------------------------------------------------------------------
+// Bullish FVG: current low is above the high of 2 bars ago (gap left unfilled).
+// Bearish FVG: current high is below the low  of 2 bars ago.
+var array<box> fvgBoxes = array.new_box()
+
+bullFVG = low > high[2]
+bearFVG = high < low[2]
+
+if showFVG and bullFVG
+    bx = box.new(bar_index - 2, low, bar_index + fvgExtend, high[2],
+         border_color = na, bgcolor = fvgBullCol)
+    array.push(fvgBoxes, bx)
+    if array.size(fvgBoxes) > fvgMax
+        box.delete(array.shift(fvgBoxes))
+
+if showFVG and bearFVG
+    bx = box.new(bar_index - 2, low[2], bar_index + fvgExtend, high,
+         border_color = na, bgcolor = fvgBearCol)
+    array.push(fvgBoxes, bx)
+    if array.size(fvgBoxes) > fvgMax
+        box.delete(array.shift(fvgBoxes))
+
+// -----------------------------------------------------------------------------
+// Signals & bias background
+// -----------------------------------------------------------------------------
 plotshape(longSignal,  title = "Long",  style = shape.triangleup,
      location = location.belowbar, color = color.new(color.green, 0),
      size = size.small, text = "BUY")
@@ -97,12 +154,13 @@ plotshape(shortSignal, title = "Short", style = shape.triangledown,
      location = location.abovebar, color = color.new(color.red, 0),
      size = size.small, text = "SELL")
 
-// Background tint of the current higher-TF bias (subtle).
 bgcolor(biasUp   ? color.new(color.green, 94) : na, title = "Bias Up")
 bgcolor(biasDown ? color.new(color.red,   94) : na, title = "Bias Down")
 
 // -----------------------------------------------------------------------------
-// Alerts (right-click a signal -> Add alert, or use these conditions)
+// Alerts
 // -----------------------------------------------------------------------------
 alertcondition(longSignal,  title = "st4 Long Signal",  message = "st4 SCALP LONG on {{ticker}} {{interval}}")
 alertcondition(shortSignal, title = "st4 Short Signal", message = "st4 SCALP SHORT on {{ticker}} {{interval}}")
+alertcondition(bullFVG,     title = "st4 Bullish FVG",  message = "st4 Bullish FVG on {{ticker}} {{interval}}")
+alertcondition(bearFVG,     title = "st4 Bearish FVG",  message = "st4 Bearish FVG on {{ticker}} {{interval}}")
