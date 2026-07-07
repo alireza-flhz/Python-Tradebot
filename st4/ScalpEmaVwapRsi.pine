@@ -10,17 +10,25 @@
 // What you SEE on the chart:
 //   * IMPORTANT Support / Resistance levels (swing pivots + touch clustering)
 //   * IMPORTANT Fair Value Gap (FVG) boxes  (ATR-filtered, filled ones removed)
-//   * BUY / SELL scalp arrows               (top-down EMA + VWAP + RSI engine)
+//   * ENTRY SUGGESTIONS: BUY / SELL arrow + a label with Entry / SL / TP
 //   * A subtle bias background              (30m direction)
 //
-// "Important" filtering (this version's focus):
+// Entry suggestion logic (this version's focus):
+//   LONG  -> 30m bias up  + price reacts at an important SUPPORT (taps it and
+//            closes back above) + close above EMA21 + VWAP ok + bullish candle
+//            + RSI > 50. SL = just below the support (ATR buffer). TP = nearest
+//            important resistance above, else Reward:Risk target.
+//   SHORT -> the mirror image at an important resistance.
+//   A "+FVG" tag on the label means price is also inside a same-direction FVG.
+//
+// "Important" filtering:
 //   S/R  -> nearby pivots are merged into one level and their TOUCHES counted;
 //           only levels touched >= "Min touches" are treated as important.
 //   FVG  -> only gaps at least "Min FVG size (xATR)" wide are drawn, and a box
 //           is deleted once price trades back through it (mitigated / filled).
 //
 // The EMA and VWAP LINES are not drawn (chart kept clean). Those values are
-// still calculated because the BUY/SELL engine uses them.
+// still calculated because the entry engine uses them.
 //
 // How to run:
 //   1. TradingView -> Pine Editor -> paste this file -> Add to chart.
@@ -42,11 +50,17 @@ indicator(
 // Bias / entry engine (drives BUY/SELL arrows; lines are hidden)
 biasTF     = input.timeframe("30", "Higher-TF Bias",  group = "Bias")
 biasEmaLen = input.int(200, "Bias EMA Length", minval = 1, group = "Bias")
-emaFast    = input.int(9,   "EMA Fast (pullback)",  minval = 1, group = "Entry engine")
-emaSlow    = input.int(21,  "EMA Slow (pullback)",  minval = 1, group = "Entry engine")
+emaSlow    = input.int(21,  "EMA Trend filter",     minval = 1, group = "Entry engine")
 rsiLen     = input.int(14,  "RSI Length",           minval = 1, group = "Entry engine")
 useVwap    = input.bool(true, "Require VWAP alignment", group = "Entry engine")
-showSignals= input.bool(true, "Show BUY/SELL arrows",   group = "Entry engine")
+showSignals= input.bool(true, "Show entry suggestions", group = "Entry engine")
+
+// Entry suggestion (Entry / Stop Loss / Take Profit)
+showTrade  = input.bool(true,  "Draw Entry/SL/TP levels", group = "Entry suggestion")
+slBufAtr   = input.float(0.5,  "SL buffer beyond level (xATR)", minval = 0.0, step = 0.1, group = "Entry suggestion")
+rrTarget   = input.float(2.0,  "Reward:Risk if no opposite level", minval = 0.5, step = 0.5, group = "Entry suggestion")
+tradeLen   = input.int(20,     "SL/TP line length (bars)", minval = 1, group = "Entry suggestion")
+tradeMax   = input.int(6,      "Max suggestions kept", minval = 1, group = "Entry suggestion")
 
 atrLen     = input.int(14, "ATR Length (for filters)", minval = 1, group = "Importance")
 
@@ -78,7 +92,6 @@ atr = ta.atr(atrLen)
 // -----------------------------------------------------------------------------
 // Entry engine (calculated, not plotted)
 // -----------------------------------------------------------------------------
-ema9  = ta.ema(close, emaFast)
 ema21 = ta.ema(close, emaSlow)
 rsi   = ta.rsi(close, rsiLen)
 vwap  = ta.vwap(hlc3)
@@ -90,11 +103,8 @@ biasDown = close < htfBiasEma
 
 vwapOkLong  = not useVwap or close > vwap
 vwapOkShort = not useVwap or close < vwap
-
-longSetup  = biasUp   and close > ema21 and vwapOkLong  and low  <= ema9 and close > open and rsi > 50
-shortSetup = biasDown and close < ema21 and vwapOkShort and high >= ema9 and close < open and rsi < 50
-longSignal  = showSignals and longSetup  and not longSetup[1]
-shortSignal = showSignals and shortSetup and not shortSetup[1]
+// Entry suggestions are built AFTER the S/R levels below, because a valid entry
+// requires price to react at an important support/resistance.
 
 // -----------------------------------------------------------------------------
 // Support / Resistance  -  swing pivots clustered into touch-counted levels
@@ -225,12 +235,120 @@ if array.size(fvgBoxes) > fvgMax
     array.shift(fvgBull)
 
 // -----------------------------------------------------------------------------
+// Entry suggestion engine  -  react at an important level, in the bias direction
+// -----------------------------------------------------------------------------
+// Nearest IMPORTANT support that price just tapped and closed back above.
+f_hitSupport() =>
+    best = float(na)
+    sz = array.size(lvlPrice)
+    if sz > 0
+        for i = 0 to sz - 1
+            if not array.get(lvlRes, i) and array.get(lvlTouch, i) >= srMinTouch
+                lv = array.get(lvlPrice, i)
+                if low <= lv + tol and close > lv and (na(best) or lv > best)
+                    best := lv
+    best
+
+// Nearest IMPORTANT resistance that price just tapped and closed back below.
+f_hitResistance() =>
+    best = float(na)
+    sz = array.size(lvlPrice)
+    if sz > 0
+        for i = 0 to sz - 1
+            if array.get(lvlRes, i) and array.get(lvlTouch, i) >= srMinTouch
+                lv = array.get(lvlPrice, i)
+                if high >= lv - tol and close < lv and (na(best) or lv < best)
+                    best := lv
+    best
+
+// Nearest important resistance above a price (used as Take Profit for longs).
+f_nearestResAbove(float p) =>
+    best = float(na)
+    sz = array.size(lvlPrice)
+    if sz > 0
+        for i = 0 to sz - 1
+            if array.get(lvlRes, i) and array.get(lvlTouch, i) >= srMinTouch
+                lv = array.get(lvlPrice, i)
+                if lv > p and (na(best) or lv < best)
+                    best := lv
+    best
+
+// Nearest important support below a price (used as Take Profit for shorts).
+f_nearestSupBelow(float p) =>
+    best = float(na)
+    sz = array.size(lvlPrice)
+    if sz > 0
+        for i = 0 to sz - 1
+            if not array.get(lvlRes, i) and array.get(lvlTouch, i) >= srMinTouch
+                lv = array.get(lvlPrice, i)
+                if lv < p and (na(best) or lv > best)
+                    best := lv
+    best
+
+// Is price currently inside an active FVG of the given direction? (confluence)
+f_inFVG(bool bull) =>
+    hit = false
+    sz = array.size(fvgBoxes)
+    if sz > 0
+        for i = 0 to sz - 1
+            if array.get(fvgBull, i) == bull and close <= array.get(fvgTop, i) and close >= array.get(fvgBot, i)
+                hit := true
+    hit
+
+supHit = f_hitSupport()
+resHit = f_hitResistance()
+
+longRaw  = biasUp   and not na(supHit) and close > ema21 and vwapOkLong  and close > open and rsi > 50
+shortRaw = biasDown and not na(resHit) and close < ema21 and vwapOkShort and close < open and rsi < 50
+longEntry  = showSignals and longRaw  and not longRaw[1]
+shortEntry = showSignals and shortRaw and not shortRaw[1]
+
+// Trade-level drawings (Entry / SL / TP), kept in arrays with a cap.
+var array<label> trLbl = array.new_label()
+var array<line>  trSL  = array.new_line()
+var array<line>  trTP  = array.new_line()
+
+f_pushTrade(bool isLong, float e, float sl, float tp) =>
+    col  = isLong ? color.green : color.red
+    conf = f_inFVG(isLong) ? "  +FVG" : ""
+    head = (isLong ? "LONG" : "SHORT") + conf
+    txt  = head + "\nE  " + str.tostring(e, format.mintick) + "\nSL " + str.tostring(sl, format.mintick) + "\nTP " + str.tostring(tp, format.mintick)
+    lb = label.new(bar_index, e, txt,
+         style = isLong ? label.style_label_up : label.style_label_down,
+         color = color.new(col, 15), textcolor = color.white, size = size.small)
+    lnSL = line.new(bar_index, sl, bar_index + tradeLen, sl,
+         color = color.new(color.red,   0), width = 1, style = line.style_dashed)
+    lnTP = line.new(bar_index, tp, bar_index + tradeLen, tp,
+         color = color.new(color.green, 0), width = 1, style = line.style_dashed)
+    array.push(trLbl, lb)
+    array.push(trSL,  lnSL)
+    array.push(trTP,  lnTP)
+    if array.size(trLbl) > tradeMax
+        label.delete(array.shift(trLbl))
+        line.delete(array.shift(trSL))
+        line.delete(array.shift(trTP))
+
+if showTrade and longEntry
+    e  = close
+    sl = supHit - atr * slBufAtr
+    r  = f_nearestResAbove(e)
+    tp = not na(r) ? r : e + (e - sl) * rrTarget
+    f_pushTrade(true, e, sl, tp)
+
+if showTrade and shortEntry
+    e  = close
+    sl = resHit + atr * slBufAtr
+    s  = f_nearestSupBelow(e)
+    tp = not na(s) ? s : e - (sl - e) * rrTarget
+    f_pushTrade(false, e, sl, tp)
+
+// -----------------------------------------------------------------------------
 // Signals & bias background
 // -----------------------------------------------------------------------------
-plotshape(longSignal,  title = "Long",  style = shape.triangleup,
+plotshape(longEntry,  title = "Long Entry",  style = shape.triangleup,
      location = location.belowbar, color = color.new(color.green, 0),
      size = size.small, text = "BUY")
-plotshape(shortSignal, title = "Short", style = shape.triangledown,
+plotshape(shortEntry, title = "Short Entry", style = shape.triangledown,
      location = location.abovebar, color = color.new(color.red, 0),
      size = size.small, text = "SELL")
 
@@ -240,7 +358,7 @@ bgcolor(biasDown ? color.new(color.red,   94) : na, title = "Bias Down")
 // -----------------------------------------------------------------------------
 // Alerts
 // -----------------------------------------------------------------------------
-alertcondition(longSignal,  title = "st4 Long Signal",  message = "st4 SCALP LONG on {{ticker}} {{interval}}")
-alertcondition(shortSignal, title = "st4 Short Signal", message = "st4 SCALP SHORT on {{ticker}} {{interval}}")
-alertcondition(bullFVG,     title = "st4 Bullish FVG",  message = "st4 Important Bullish FVG on {{ticker}} {{interval}}")
-alertcondition(bearFVG,     title = "st4 Bearish FVG",  message = "st4 Important Bearish FVG on {{ticker}} {{interval}}")
+alertcondition(longEntry,  title = "st4 Long Entry",  message = "st4 LONG entry on {{ticker}} {{interval}} - see chart for SL/TP")
+alertcondition(shortEntry, title = "st4 Short Entry", message = "st4 SHORT entry on {{ticker}} {{interval}} - see chart for SL/TP")
+alertcondition(bullFVG,    title = "st4 Bullish FVG", message = "st4 Important Bullish FVG on {{ticker}} {{interval}}")
+alertcondition(bearFVG,    title = "st4 Bearish FVG", message = "st4 Important Bearish FVG on {{ticker}} {{interval}}")
