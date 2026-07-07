@@ -61,6 +61,8 @@ slBufAtr   = input.float(0.5,  "SL buffer beyond level (xATR)", minval = 0.0, st
 rrTarget   = input.float(2.0,  "Reward:Risk if no opposite level", minval = 0.5, step = 0.5, group = "Entry suggestion")
 tradeLen   = input.int(20,     "SL/TP line length (bars)", minval = 1, group = "Entry suggestion")
 tradeMax   = input.int(6,      "Max suggestions kept", minval = 1, group = "Entry suggestion")
+entryMinT  = input.int(1,      "Min touches for entry level", minval = 1, group = "Entry suggestion")
+reqConfirm = input.bool(true,  "Require candle+RSI+VWAP confirm", group = "Entry suggestion")
 
 atrLen     = input.int(14, "ATR Length (for filters)", minval = 1, group = "Importance")
 
@@ -243,19 +245,19 @@ f_hitSupport() =>
     sz = array.size(lvlPrice)
     if sz > 0
         for i = 0 to sz - 1
-            if not array.get(lvlRes, i) and array.get(lvlTouch, i) >= srMinTouch
+            if not array.get(lvlRes, i) and array.get(lvlTouch, i) >= entryMinT
                 lv = array.get(lvlPrice, i)
                 if low <= lv + tol and close > lv and (na(best) or lv > best)
                     best := lv
     best
 
-// Nearest IMPORTANT resistance that price just tapped and closed back below.
+// Nearest resistance that price just tapped and closed back below.
 f_hitResistance() =>
     best = float(na)
     sz = array.size(lvlPrice)
     if sz > 0
         for i = 0 to sz - 1
-            if array.get(lvlRes, i) and array.get(lvlTouch, i) >= srMinTouch
+            if array.get(lvlRes, i) and array.get(lvlTouch, i) >= entryMinT
                 lv = array.get(lvlPrice, i)
                 if high >= lv - tol and close < lv and (na(best) or lv < best)
                     best := lv
@@ -298,8 +300,10 @@ f_inFVG(bool bull) =>
 supHit = f_hitSupport()
 resHit = f_hitResistance()
 
-longRaw  = biasUp   and not na(supHit) and close > ema21 and vwapOkLong  and close > open and rsi > 50
-shortRaw = biasDown and not na(resHit) and close < ema21 and vwapOkShort and close < open and rsi < 50
+longConf  = (not reqConfirm) or (close > ema21 and vwapOkLong  and close > open and rsi > 50)
+shortConf = (not reqConfirm) or (close < ema21 and vwapOkShort and close < open and rsi < 50)
+longRaw  = biasUp   and not na(supHit) and longConf
+shortRaw = biasDown and not na(resHit) and shortConf
 longEntry  = showSignals and longRaw  and not longRaw[1]
 shortEntry = showSignals and shortRaw and not shortRaw[1]
 
