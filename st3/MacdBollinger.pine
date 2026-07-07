@@ -1,0 +1,96 @@
+//@version=5
+// =============================================================================
+// Strategy Three (st3) - MACD + Bollinger Bands
+// TradingView Pine Script v5
+//
+// Idea:
+//   * Use the MACD cross as the momentum / direction trigger.
+//   * Use Bollinger Bands to confirm the price location (buy near the lower
+//     band, sell near the upper band) so we do not chase extended moves.
+//   * Fixed percentage Stop Loss and Take Profit for risk management.
+//
+// How to run:
+//   1. Open TradingView -> Pine Editor.
+//   2. Paste this whole file.
+//   3. Press "Add to chart". Use the "Strategy Tester" tab for the backtest.
+// =============================================================================
+
+strategy(
+     title              = "st3 - MACD + Bollinger",
+     shorttitle         = "st3 MACD+BB",
+     overlay            = true,
+     initial_capital    = 10000,
+     default_qty_type   = strategy.percent_of_equity,
+     default_qty_value  = 99,
+     commission_type    = strategy.commission.percent,
+     commission_value   = 0.0,
+     pyramiding         = 0)
+
+// -----------------------------------------------------------------------------
+// Inputs
+// -----------------------------------------------------------------------------
+// MACD
+fastLength   = input.int(12,  "MACD Fast Length",   minval = 1, group = "MACD")
+slowLength   = input.int(26,  "MACD Slow Length",   minval = 1, group = "MACD")
+signalLength = input.int(9,   "MACD Signal Length", minval = 1, group = "MACD")
+
+// Bollinger Bands
+bbLength     = input.int(20,   "BB Length",         minval = 1,   group = "Bollinger Bands")
+bbMult       = input.float(2.5,"BB StdDev Mult",    minval = 0.1, step = 0.1, group = "Bollinger Bands")
+
+// Risk management (percentages)
+useLong      = input.bool(true,  "Allow Long Trades",  group = "Trades")
+useShort     = input.bool(true,  "Allow Short Trades", group = "Trades")
+slPerc       = input.float(2.0, "Stop Loss %",   minval = 0.1, step = 0.1, group = "Risk") / 100.0
+tpPerc       = input.float(4.0, "Take Profit %", minval = 0.1, step = 0.1, group = "Risk") / 100.0
+
+// -----------------------------------------------------------------------------
+// Indicators
+// -----------------------------------------------------------------------------
+[macdLine, signalLine, _hist] = ta.macd(close, fastLength, slowLength, signalLength)
+
+bbBasis = ta.sma(close, bbLength)
+bbDev   = bbMult * ta.stdev(close, bbLength)
+bbUpper = bbBasis + bbDev
+bbLower = bbBasis - bbDev
+
+// -----------------------------------------------------------------------------
+// Entry conditions
+// -----------------------------------------------------------------------------
+// Long : MACD crosses up (bullish momentum) while price is at / below the lower
+//        band -> oversold bounce with momentum turning up.
+// Short: MACD crosses down (bearish momentum) while price is at / above the
+//        upper band -> overbought fade with momentum turning down.
+macdCrossUp   = ta.crossover(macdLine, signalLine)
+macdCrossDown = ta.crossunder(macdLine, signalLine)
+
+longCondition  = useLong  and macdCrossUp   and close <= bbLower
+shortCondition = useShort and macdCrossDown and close >= bbUpper
+
+// -----------------------------------------------------------------------------
+// Orders
+// -----------------------------------------------------------------------------
+if longCondition and strategy.position_size <= 0
+    strategy.entry("Long", strategy.long)
+    strategy.exit("Long TP/SL", "Long",
+         stop  = close * (1 - slPerc),
+         limit = close * (1 + tpPerc))
+
+if shortCondition and strategy.position_size >= 0
+    strategy.entry("Short", strategy.short)
+    strategy.exit("Short TP/SL", "Short",
+         stop  = close * (1 + slPerc),
+         limit = close * (1 - tpPerc))
+
+// -----------------------------------------------------------------------------
+// Plots
+// -----------------------------------------------------------------------------
+plot(bbBasis, "BB Basis", color = color.new(color.orange, 0))
+p1 = plot(bbUpper, "BB Upper", color = color.new(color.blue, 0))
+p2 = plot(bbLower, "BB Lower", color = color.new(color.blue, 0))
+fill(p1, p2, color = color.new(color.blue, 92), title = "BB Fill")
+
+plotshape(longCondition,  title = "Long Signal",  style = shape.triangleup,
+     location = location.belowbar, color = color.new(color.green, 0), size = size.small)
+plotshape(shortCondition, title = "Short Signal", style = shape.triangledown,
+     location = location.abovebar, color = color.new(color.red, 0),   size = size.small)
