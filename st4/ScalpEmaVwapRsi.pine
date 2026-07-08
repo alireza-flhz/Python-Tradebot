@@ -1,15 +1,16 @@
 //@version=5
 // =============================================================================
-// Strategy Four (st4) - Scalp entry signal (simple)
-// TradingView Pine Script v5  -  INDICATOR (arrows only)
+// Strategy Four (st4) - Scalp entry signal + Price Action
+// TradingView Pine Script v5  -  INDICATOR
 //
-// Only one job for now: mark the entry points.
-//   * GREEN arrow (below the bar) = LONG entry
-//   * RED   arrow (above the bar) = SHORT entry
-//
-// The signal is an EMA cross (fast over/under slow) - simple and it fires often,
-// so you actually see arrows. An optional higher-timeframe trend filter is
-// available but OFF by default.
+// On the chart:
+//   * GREEN arrow (below bar) = LONG entry   |  RED arrow (above bar) = SHORT
+//     (entry = EMA fast crossing slow; optional higher-TF trend filter)
+//   * Support / Resistance levels            (swing pivots)          <- price action
+//   * Candlestick patterns:                                          <- price action
+//       - Bullish / Bearish Engulfing        (labels BuEng / BeEng)
+//       - Hammer / Pin bar (bullish reject)  (green dot below bar)
+//       - Shooting Star   (bearish reject)   (red dot above bar)
 //
 // How to run:
 //   1. TradingView -> Pine Editor -> paste this file -> Add to chart.
@@ -17,22 +18,36 @@
 // =============================================================================
 
 indicator(
-     title      = "st4 - Scalp S/R + FVG",
-     shorttitle = "st4 S/R+FVG",
-     overlay    = true)
+     title            = "st4 - Scalp S/R + FVG",
+     shorttitle       = "st4 S/R+FVG",
+     overlay          = true,
+     max_lines_count  = 100,
+     max_labels_count = 300)
 
 // -----------------------------------------------------------------------------
 // Inputs
 // -----------------------------------------------------------------------------
-fastLen = input.int(9,  "EMA Fast", minval = 1, group = "Signal")
-slowLen = input.int(21, "EMA Slow", minval = 1, group = "Signal")
+// Entry signal (EMA cross)
+fastLen = input.int(9,  "EMA Fast", minval = 1, group = "Entry signal")
+slowLen = input.int(21, "EMA Slow", minval = 1, group = "Entry signal")
+useBias = input.bool(false, "Only trade with higher-TF trend", group = "Entry signal")
+biasTF  = input.timeframe("30", "Trend timeframe", group = "Entry signal")
+biasLen = input.int(200, "Trend EMA length", minval = 1, group = "Entry signal")
 
-useBias = input.bool(false, "Only trade with higher-TF trend", group = "Trend filter (optional)")
-biasTF  = input.timeframe("30", "Trend timeframe", group = "Trend filter (optional)")
-biasLen = input.int(200, "Trend EMA length", minval = 1, group = "Trend filter (optional)")
+// Price action - Support / Resistance
+showSR  = input.bool(true, "Show Support/Resistance", group = "Price Action")
+srLen   = input.int(10, "S/R pivot lookback", minval = 2, group = "Price Action")
+srMax   = input.int(4,  "Levels per side", minval = 1, group = "Price Action")
+
+// Price action - candlestick patterns
+showPat = input.bool(true, "Show candlestick patterns", group = "Price Action")
+pinRatio= input.float(2.0, "Pin/Hammer wick ratio", minval = 1.0, step = 0.5, group = "Price Action")
+
+resCol  = input.color(color.red,   "Resistance", group = "Colors")
+supCol  = input.color(color.green, "Support",    group = "Colors")
 
 // -----------------------------------------------------------------------------
-// Signal
+// Entry signal
 // -----------------------------------------------------------------------------
 emaFast = ta.ema(close, fastLen)
 emaSlow = ta.ema(close, slowLen)
@@ -42,21 +57,65 @@ htfEma = request.security(syminfo.tickerid, biasTF, ta.ema(close, biasLen),
 biasUp = not useBias or close > htfEma
 biasDn = not useBias or close < htfEma
 
-longEntry  = ta.crossover(emaFast, emaSlow)  and biasUp   // LONG  -> green arrow
-shortEntry = ta.crossunder(emaFast, emaSlow) and biasDn   // SHORT -> red arrow
+longEntry  = ta.crossover(emaFast, emaSlow)  and biasUp
+shortEntry = ta.crossunder(emaFast, emaSlow) and biasDn
+
+plotshape(longEntry,  title = "Long Entry",  style = shape.triangleup,
+     location = location.belowbar, color = color.new(color.green, 0), size = size.small)
+plotshape(shortEntry, title = "Short Entry", style = shape.triangledown,
+     location = location.abovebar, color = color.new(color.red, 0), size = size.small)
 
 // -----------------------------------------------------------------------------
-// Plot (arrows only)
+// Price action - Support / Resistance (swing pivots -> horizontal levels)
 // -----------------------------------------------------------------------------
-plotshape(longEntry,  title = "Long Entry",  style = shape.triangleup,
-     location = location.belowbar, color = color.new(color.green, 0),
-     size = size.small)
-plotshape(shortEntry, title = "Short Entry", style = shape.triangledown,
-     location = location.abovebar, color = color.new(color.red, 0),
-     size = size.small)
+var array<line> resL = array.new_line()
+var array<line> supL = array.new_line()
+
+ph = ta.pivothigh(high, srLen, srLen)
+pl = ta.pivotlow(low,  srLen, srLen)
+
+if showSR and not na(ph)
+    ln = line.new(bar_index - srLen, ph, bar_index, ph,
+         color = resCol, width = 1, extend = extend.right)
+    array.push(resL, ln)
+    if array.size(resL) > srMax
+        line.delete(array.shift(resL))
+
+if showSR and not na(pl)
+    ln = line.new(bar_index - srLen, pl, bar_index, pl,
+         color = supCol, width = 1, extend = extend.right)
+    array.push(supL, ln)
+    if array.size(supL) > srMax
+        line.delete(array.shift(supL))
+
+// -----------------------------------------------------------------------------
+// Price action - candlestick patterns
+// -----------------------------------------------------------------------------
+body   = math.abs(close - open)
+upWick = high - math.max(close, open)
+dnWick = math.min(close, open) - low
+rng    = high - low
+
+bullEngulf = close > open and close[1] < open[1] and close >= open[1] and open <= close[1]
+bearEngulf = close < open and close[1] > open[1] and close <= open[1] and open >= close[1]
+hammer     = rng > 0 and dnWick > body * pinRatio and upWick < body   // bullish rejection
+shootStar  = rng > 0 and upWick > body * pinRatio and dnWick < body   // bearish rejection
+
+plotshape(showPat and bullEngulf, title = "Bull Engulfing", style = shape.labelup,
+     location = location.belowbar, color = color.new(color.teal, 0),
+     text = "BuEng", textcolor = color.white, size = size.tiny)
+plotshape(showPat and bearEngulf, title = "Bear Engulfing", style = shape.labeldown,
+     location = location.abovebar, color = color.new(color.maroon, 0),
+     text = "BeEng", textcolor = color.white, size = size.tiny)
+plotshape(showPat and hammer, title = "Hammer / Pin", style = shape.circle,
+     location = location.belowbar, color = color.new(color.green, 0), size = size.tiny)
+plotshape(showPat and shootStar, title = "Shooting Star", style = shape.circle,
+     location = location.abovebar, color = color.new(color.red, 0), size = size.tiny)
 
 // -----------------------------------------------------------------------------
 // Alerts
 // -----------------------------------------------------------------------------
 alertcondition(longEntry,  title = "st4 Long Entry",  message = "st4 LONG on {{ticker}} {{interval}}")
 alertcondition(shortEntry, title = "st4 Short Entry", message = "st4 SHORT on {{ticker}} {{interval}}")
+alertcondition(bullEngulf, title = "st4 Bull Engulfing", message = "st4 Bullish Engulfing on {{ticker}} {{interval}}")
+alertcondition(bearEngulf, title = "st4 Bear Engulfing", message = "st4 Bearish Engulfing on {{ticker}} {{interval}}")
