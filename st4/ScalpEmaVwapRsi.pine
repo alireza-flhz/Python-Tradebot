@@ -1,16 +1,17 @@
 //@version=5
 // =============================================================================
-// Strategy Four (st4) - Scalp entry signal + Price Action
+// Strategy Four (st4) - Scalp entry + Price Action + Trend Channel
 // TradingView Pine Script v5  -  INDICATOR
 //
 // On the chart:
-//   * GREEN arrow (below bar) = LONG entry   |  RED arrow (above bar) = SHORT
-//     (entry = EMA fast crossing slow; optional higher-TF trend filter)
-//   * Support / Resistance levels            (swing pivots)          <- price action
-//   * Candlestick patterns:                                          <- price action
-//       - Bullish / Bearish Engulfing        (labels BuEng / BeEng)
-//       - Hammer / Pin bar (bullish reject)  (green dot below bar)
-//       - Shooting Star   (bearish reject)   (red dot above bar)
+//   * TREND CHANNEL (linear regression): mid line + upper/lower bands.        <- NEW
+//     Coloured GREEN when the slope points up, RED when it points down.
+//   * TREND label (UP / DOWN) so you trade mostly WITH the trend.             <- NEW
+//   * GREEN arrow (below bar) = LONG entry | RED arrow (above bar) = SHORT.
+//     With "align to trend" ON, longs only show in an up-trend and shorts
+//     only in a down-trend.
+//   * Support / Resistance levels (swing pivots).
+//   * Candlestick patterns: Engulfing (BuEng/BeEng), Hammer/Pin, Shooting Star.
 //
 // How to run:
 //   1. TradingView -> Pine Editor -> paste this file -> Add to chart.
@@ -28,23 +29,66 @@ indicator(
 // Inputs
 // -----------------------------------------------------------------------------
 // Entry signal (EMA cross)
-fastLen = input.int(9,  "EMA Fast", minval = 1, group = "Entry signal")
-slowLen = input.int(21, "EMA Slow", minval = 1, group = "Entry signal")
-useBias = input.bool(false, "Only trade with higher-TF trend", group = "Entry signal")
-biasTF  = input.timeframe("30", "Trend timeframe", group = "Entry signal")
-biasLen = input.int(200, "Trend EMA length", minval = 1, group = "Entry signal")
+fastLen    = input.int(9,  "EMA Fast", minval = 1, group = "Entry signal")
+slowLen    = input.int(21, "EMA Slow", minval = 1, group = "Entry signal")
+alignTrend = input.bool(true, "Only signal WITH the trend", group = "Entry signal")
+useBias    = input.bool(false, "Also require higher-TF trend", group = "Entry signal")
+biasTF     = input.timeframe("30", "Higher-TF timeframe", group = "Entry signal")
+biasLen    = input.int(200, "Higher-TF EMA length", minval = 1, group = "Entry signal")
+
+// Trend channel (linear regression)
+showChan   = input.bool(true, "Show trend channel", group = "Trend Channel")
+regLen     = input.int(100, "Channel length (bars)", minval = 5, group = "Trend Channel")
+devMult    = input.float(2.0, "Channel width (xStdev)", minval = 0.5, step = 0.5, group = "Trend Channel")
+showTrend  = input.bool(true, "Show TREND label", group = "Trend Channel")
 
 // Price action - Support / Resistance
-showSR  = input.bool(true, "Show Support/Resistance", group = "Price Action")
-srLen   = input.int(10, "S/R pivot lookback", minval = 2, group = "Price Action")
-srMax   = input.int(4,  "Levels per side", minval = 1, group = "Price Action")
+showSR     = input.bool(true, "Show Support/Resistance", group = "Price Action")
+srLen      = input.int(10, "S/R pivot lookback", minval = 2, group = "Price Action")
+srMax      = input.int(4,  "Levels per side", minval = 1, group = "Price Action")
 
 // Price action - candlestick patterns
-showPat = input.bool(true, "Show candlestick patterns", group = "Price Action")
-pinRatio= input.float(2.0, "Pin/Hammer wick ratio", minval = 1.0, step = 0.5, group = "Price Action")
+showPat    = input.bool(true, "Show candlestick patterns", group = "Price Action")
+pinRatio   = input.float(2.0, "Pin/Hammer wick ratio", minval = 1.0, step = 0.5, group = "Price Action")
 
-resCol  = input.color(color.red,   "Resistance", group = "Colors")
-supCol  = input.color(color.green, "Support",    group = "Colors")
+resCol     = input.color(color.red,   "Resistance", group = "Colors")
+supCol     = input.color(color.green, "Support",    group = "Colors")
+
+// -----------------------------------------------------------------------------
+// Trend channel + direction (linear regression)
+// -----------------------------------------------------------------------------
+reg    = ta.linreg(close, regLen, 0)      // regression value at current bar
+reg1   = ta.linreg(close, regLen, 1)      // regression value one bar ago
+slope  = reg - reg1                        // per-bar slope -> trend direction
+startP = reg - slope * (regLen - 1)        // regression value at start of window
+endP   = reg
+dev    = ta.stdev(close, regLen) * devMult
+
+trendUp = slope > 0
+trendDn = slope < 0
+
+var line cMid = na
+var line cUp  = na
+var line cLo  = na
+if showChan and barstate.islast
+    if not na(cMid)
+        line.delete(cMid)
+        line.delete(cUp)
+        line.delete(cLo)
+    x1   = bar_index - regLen + 1
+    tcol = trendUp ? color.green : color.red
+    cMid := line.new(x1, startP,       bar_index, endP,       color = color.new(tcol, 0),  width = 2)
+    cUp  := line.new(x1, startP + dev, bar_index, endP + dev, color = color.new(tcol, 40), style = line.style_dashed)
+    cLo  := line.new(x1, startP - dev, bar_index, endP - dev, color = color.new(tcol, 40), style = line.style_dashed)
+
+var label tLbl = na
+if showTrend and barstate.islast
+    if not na(tLbl)
+        label.delete(tLbl)
+    tcol = trendUp ? color.green : color.red
+    ttxt = trendUp ? "TREND ▲ UP" : "TREND ▼ DOWN"
+    tLbl := label.new(bar_index, high, ttxt, style = label.style_label_down,
+         color = color.new(tcol, 0), textcolor = color.white, size = size.normal)
 
 // -----------------------------------------------------------------------------
 // Entry signal
@@ -57,8 +101,8 @@ htfEma = request.security(syminfo.tickerid, biasTF, ta.ema(close, biasLen),
 biasUp = not useBias or close > htfEma
 biasDn = not useBias or close < htfEma
 
-longEntry  = ta.crossover(emaFast, emaSlow)  and biasUp
-shortEntry = ta.crossunder(emaFast, emaSlow) and biasDn
+longEntry  = ta.crossover(emaFast, emaSlow)  and biasUp and (not alignTrend or trendUp)
+shortEntry = ta.crossunder(emaFast, emaSlow) and biasDn and (not alignTrend or trendDn)
 
 plotshape(longEntry,  title = "Long Entry",  style = shape.triangleup,
      location = location.belowbar, color = color.new(color.green, 0), size = size.small)
